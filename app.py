@@ -58,15 +58,19 @@ def generate_audio_bytes(text):
     fp.seek(0)
     return fp.read()
 
-def get_audio_player_html(audio_bytes, speed=1.0):
-    """Creates a custom HTML audio player that supports speed control."""
+def get_audio_player_html(audio_bytes, speed=1.0, page_num=0):
+    """Creates a custom HTML audio player with a UNIQUE ID per page."""
     b64 = base64.b64encode(audio_bytes).decode()
+    
+    # We add {page_num} to the ID so the browser knows it's a NEW player
+    player_id = f"audio_player_{page_num}"
+    
     md = f"""
-        <audio controls autoplay id="audio_player" style="width: 100%;">
+        <audio controls autoplay id="{player_id}" style="width: 100%;">
             <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
         </audio>
         <script>
-            var audio = document.getElementById("audio_player");
+            var audio = document.getElementById("{player_id}");
             audio.playbackRate = {speed};
         </script>
     """
@@ -144,8 +148,8 @@ if uploaded_file is not None:
     # Audio Player
     audio_bytes = generate_audio_bytes(current_text)
     if audio_bytes:
-        # Render custom player with speed control
-        st.markdown(get_audio_player_html(audio_bytes, speed), unsafe_allow_html=True)
+        # Pass the page number so the ID is unique!
+        st.markdown(get_audio_player_html(audio_bytes, speed, st.session_state.current_page), unsafe_allow_html=True)
     else:
         st.warning("No text to read on this page.")
 

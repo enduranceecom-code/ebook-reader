@@ -2,159 +2,58 @@ import streamlit as st
 import PyPDF2
 from gtts import gTTS
 import io
-import base64
 
-# --- 1. Page Config ---
-st.set_page_config(page_title="Free eBook Reader", layout="wide")
+# --- 1. App Setup ---
+st.set_page_config(page_title="Simple eBook Reader")
+st.title("📖 Simple eBook Reader")
 
-# --- 2. CSS for clean layout ---
-st.markdown("""
-    <style>
-    .stButton>button {
-        width: 100%;
-    }
-    .main-text {
-        font-size: 18px;
-        line-height: 1.6;
-        font-family: 'Georgia', serif;
-        padding: 20px;
-        background-color: #f9f9f9;
-        border-radius: 10px;
-        color: #333;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- 3. Session State Initialization ---
+# --- 2. Initialize State (The Memory) ---
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 0
-if 'pdf_text' not in st.session_state:
-    st.session_state.pdf_text = []
 
-# --- 4. Helper Functions ---
+# --- 3. File Uploader ---
+uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
 
-@st.cache_resource
-def parse_pdf(file):
-    """Extracts text from the entire PDF at once and caches it."""
-    pdf_reader = PyPDF2.PdfReader(file)
-    text_list = []
-    for page in pdf_reader.pages:
-        text = page.extract_text()
-        if text:
-            text_list.append(text)
-        else:
-            text_list.append("(No readable text on this page - likely an image)")
-    return text_list
-
-def generate_audio_bytes(text):
-    """Generates audio using free Google TTS."""
-    if not text.strip() or len(text) < 5:
-        return None
-    
-    # Generate MP3 data in memory
-    tts = gTTS(text=text, lang='en')
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    fp.seek(0)
-    return fp.read()
-
-def get_audio_player_html(audio_bytes, speed=1.0, page_num=0):
-    """Creates a custom HTML audio player with a UNIQUE ID per page."""
-    b64 = base64.b64encode(audio_bytes).decode()
-    
-    # We add {page_num} to the ID so the browser knows it's a NEW player
-    player_id = f"audio_player_{page_num}"
-    
-    md = f"""
-        <audio controls autoplay id="{player_id}" style="width: 100%;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        <script>
-            var audio = document.getElementById("{player_id}");
-            audio.playbackRate = {speed};
-        </script>
-    """
-    return md
-
-# --- 5. Main App Layout ---
-
-st.title("📖 Free eBook Audio Reader")
-
-# Sidebar
-with st.sidebar:
-    st.header("Settings")
-    uploaded_file = st.file_uploader("Upload PDF", type="pdf")
-    
-    st.divider()
-    
-    st.subheader("Playback Speed")
-    speed = st.select_slider(
-        "Voice Speed",
-        options=[0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
-        value=1.0
-    )
-    
-    st.info("Tip: Use the slider to read faster!")
-
-# Main Logic
 if uploaded_file is not None:
-    # Load PDF (Cached)
-    with st.spinner("Processing PDF..."):
-        text_list = parse_pdf(uploaded_file)
-        st.session_state.pdf_text = text_list
-
-    total_pages = len(st.session_state.pdf_text)
-
-    # --- Navigation Logic ---
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    # Slider callback to sync state
-    def update_slider():
-        st.session_state.current_page = st.session_state.page_slider
-
-    with col2:
-        # The slider is bound to the session state
-        st.slider(
-            "Go to Page", 
-            0, 
-            total_pages - 1, 
-            key="page_slider", 
-            value=st.session_state.current_page,
-            on_change=update_slider
-        )
-
-    # Prev/Next Buttons
-    c_prev, c_info, c_next = st.columns([1, 2, 1])
+    # Read the PDF
+    pdf_reader = PyPDF2.PdfReader(uploaded_file)
+    total_pages = len(pdf_reader.pages)
     
-    with c_prev:
+    # --- 4. Navigation Buttons ---
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
         if st.button("⬅️ Previous"):
             if st.session_state.current_page > 0:
                 st.session_state.current_page -= 1
                 st.rerun()
-                
-    with c_next:
+
+    with col3:
         if st.button("Next ➡️"):
             if st.session_state.current_page < total_pages - 1:
                 st.session_state.current_page += 1
                 st.rerun()
 
-    # --- Content Display ---
-    
-    # Get current text
-    current_text = st.session_state.pdf_text[st.session_state.current_page]
-    
+    # --- 5. Display Content ---
     st.markdown(f"### Page {st.session_state.current_page + 1} of {total_pages}")
     
-    # Audio Player
-    audio_bytes = generate_audio_bytes(current_text)
-    if audio_bytes:
-        # Pass the page number so the ID is unique!
-        st.markdown(get_audio_player_html(audio_bytes, speed, st.session_state.current_page), unsafe_allow_html=True)
+    # Extract text for the current page
+    page = pdf_reader.pages[st.session_state.current_page]
+    text = page.extract_text()
+    
+    if text:
+        # A. Create Audio
+        tts = gTTS(text=text, lang='en')
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        
+        # B. Play Audio (This player resets every time text changes)
+        st.audio(fp, format='audio/mp3', start_time=0)
+        
+        # C. Show Text
+        st.info(text)
     else:
-        st.warning("No text to read on this page.")
-
-    # Text Display
-    st.markdown(f'<div class="main-text">{current_text}</div>', unsafe_allow_html=True)
+        st.warning("No readable text found on this page.")
 
 else:
-    st.markdown("### 👋 Welcome! Upload a PDF in the sidebar to start reading.")
+    st.write("Please upload a PDF to start.")

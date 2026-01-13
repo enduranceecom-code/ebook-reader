@@ -5,10 +5,10 @@ import asyncio
 import base64
 import streamlit.components.v1 as components
 
-# --- 1. App Configuration ---
-st.set_page_config(page_title="Turbo Reader", layout="centered")
+# --- 1. App Setup ---
+st.set_page_config(page_title="Lightweight Reader", layout="centered")
 
-# Custom CSS for Mobile
+# Custom CSS
 st.markdown("""
     <style>
     div.stButton > button {
@@ -27,30 +27,28 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🚀 Turbo eBook Reader")
+st.title("🪶 Lightweight eBook Reader")
 
-# --- 2. Session State Management ---
+# --- 2. Session State ---
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 0
 if 'audio_cache' not in st.session_state:
-    st.session_state.audio_cache = {}  # Stores audio so we don't re-download
-if 'pdf_text' not in st.session_state:
-    st.session_state.pdf_text = []     # Stores all text so we don't re-read PDF
+    st.session_state.audio_cache = {} # Cache audio, not text
 
 # --- 3. Settings ---
 col1, col2 = st.columns(2)
 with col1:
     speed_mode = st.selectbox("Speed", ["Normal", "Fast (+20%)", "Turbo (+50%)"], index=1)
 with col2:
+    # Option to turn off auto-play if it glitches
     auto_play = st.checkbox("Auto-Turn Page", value=True)
 
 rate_str = "+0%"
 if speed_mode == "Fast (+20%)": rate_str = "+20%"
 elif speed_mode == "Turbo (+50%)": rate_str = "+50%"
 
-# --- 4. Async Audio Engine ---
+# --- 4. Async Audio Function ---
 async def get_audio_base64(text, rate):
-    # Generates audio and returns it as a base64 string (memory only, no files)
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate=rate)
     audio_bytes = b""
     async for chunk in communicate.stream():
@@ -58,50 +56,52 @@ async def get_audio_base64(text, rate):
             audio_bytes += chunk["data"]
     return base64.b64encode(audio_bytes).decode()
 
-# --- 5. File Upload & Processing ---
-uploaded_file = st.file_uploader("📂 Upload PDF (Loads once, stays fast)", type="pdf")
+# --- 5. File Upload ---
+uploaded_file = st.file_uploader("📂 Upload PDF", type="pdf")
 
 if uploaded_file is not None:
-    # A. One-time processing (Fixes the "4 page limit" bug)
-    if not st.session_state.pdf_text:
-        with st.spinner("Processing PDF..."):
-            pdf_reader = PyPDF2.PdfReader(uploaded_file)
-            # Store ALL pages in memory immediately
-            for page in pdf_reader.pages:
-                txt = page.extract_text()
-                st.session_state.pdf_text.append(txt if txt else "")
+    # Create the reader Object (But DON'T read the text yet)
+    pdf_reader = PyPDF2.PdfReader(uploaded_file)
+    total_pages = len(pdf_reader.pages)
     
-    total_pages = len(st.session_state.pdf_text)
-    current_page = st.session_state.current_page
-    
-    # --- 6. Navigation Logic ---
+    # Show the total page count immediately to confirm file is good
+    st.write(f"**Book Loaded:** {total_pages} pages detected.")
+
+    # --- Navigation ---
     def go_next():
         if st.session_state.current_page < total_pages - 1:
             st.session_state.current_page += 1
+            # Clear old audio cache to save memory
+            st.session_state.audio_cache = {}
+
     def go_prev():
         if st.session_state.current_page > 0:
             st.session_state.current_page -= 1
-            
-    # Page Slider (Jump to any page)
-    st.session_state.current_page = st.slider("Go to Page", 1, total_pages, st.session_state.current_page + 1) - 1
+            st.session_state.audio_cache = {}
 
-    # --- 7. Main Audio Logic (The "Cache Ahead" Trick) ---
+    # Slider Jump
+    st.session_state.current_page = st.slider(
+        "Page Selector", 1, total_pages, st.session_state.current_page + 1
+    ) - 1
+
+    current_page_idx = st.session_state.current_page
     
-    # Get Current Page Text
-    text_current = st.session_state.pdf_text[current_page]
+    # --- 6. READ ONLY CURRENT PAGE ---
+    # This is the fix. We only extract extracting text for NOW.
+    page_obj = pdf_reader.pages[current_page_idx]
+    text_current = page_obj.extract_text()
     
     if text_current:
-        # Step A: Get Current Audio (Check cache first)
-        cache_key = f"{current_page}_{rate_str}"
+        # A. Generate Audio for Current Page
+        cache_key = f"{current_page_idx}_{rate_str}"
         
         if cache_key not in st.session_state.audio_cache:
-            with st.spinner(f"Generating Page {current_page + 1}..."):
+            with st.spinner(f"Reading Page {current_page_idx + 1}..."):
                 st.session_state.audio_cache[cache_key] = asyncio.run(get_audio_base64(text_current, rate_str))
         
         b64_audio = st.session_state.audio_cache[cache_key]
 
-        # Step B: Render Player
-        # We embed the next_page logic directly into the audio player
+        # B. Render Player
         player_html = f"""
             <audio id="player" controls autoplay style="width: 100%;">
                 <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
@@ -112,7 +112,6 @@ if uploaded_file is not None:
                     const nextBtn = window.parent.document.querySelector('button[aria-label="Next Page"]');
                     if (nextBtn) {{ nextBtn.click(); }}
                     else {{
-                        // Fallback search for button text
                         var buttons = window.parent.document.getElementsByTagName('button');
                         for (var i = 0; i < buttons.length; i++) {{
                             if (buttons[i].innerText.includes("Next")) {{ buttons[i].click(); break; }}
@@ -122,32 +121,30 @@ if uploaded_file is not None:
             </script>
         """
         components.html(player_html, height=50)
+        
+        # C. PRE-FETCH NEXT PAGE (Secretly)
+        # We only look ahead 1 page.
+        if current_page_idx < total_pages - 1:
+            try:
+                next_page_idx = current_page_idx + 1
+                next_cache_key = f"{next_page_idx}_{rate_str}"
+                
+                # Check if we already have it
+                if next_cache_key not in st.session_state.audio_cache:
+                    text_next = pdf_reader.pages[next_page_idx].extract_text()
+                    if text_next:
+                        # Silently generate audio
+                        st.session_state.audio_cache[next_cache_key] = asyncio.run(get_audio_base64(text_next, rate_str))
+            except:
+                pass 
 
-        # Step C: PRE-FETCH NEXT PAGE (The Secret Sauce)
-        # While you are listening to Page N, we download Page N+1 silently.
-        if current_page < total_pages - 1:
-            next_p = current_page + 1
-            text_next = st.session_state.pdf_text[next_p]
-            next_key = f"{next_p}_{rate_str}"
-            
-            if next_key not in st.session_state.audio_cache and text_next:
-                # We run this SILENTLY (no spinner)
-                try:
-                    st.session_state.audio_cache[next_key] = asyncio.run(get_audio_base64(text_next, rate_str))
-                    # print(f"Buffered Page {next_p}") # Debug
-                except:
-                    pass
-
-    # --- 8. Navigation Buttons ---
+    # --- Controls ---
     c1, c2 = st.columns(2)
     with c1: st.button("⬅️ Prev", on_click=go_prev)
     with c2: st.button("Next ➡️", on_click=go_next, args=(), key="next_btn", help="Next Page")
 
     st.markdown("---")
-    st.markdown(text_current if text_current else "*No text found on this page.*")
+    st.markdown(text_current if text_current else "No text found.")
 
 else:
-    # Reset buffer on new load
-    if st.session_state.pdf_text:
-        st.session_state.pdf_text = []
-        st.session_state.audio_cache = {}
+    st.info("👆 Upload PDF to start")

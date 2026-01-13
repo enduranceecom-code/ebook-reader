@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 # --- 1. App Setup ---
 st.set_page_config(page_title="Continuous Reader", layout="centered")
 
-# Custom CSS
+# Custom CSS for bigger buttons on mobile
 st.markdown("""
     <style>
     div.stButton > button {
@@ -59,22 +59,20 @@ uploaded_file = st.file_uploader("📂 Tap here to upload PDF", type="pdf")
 
 # --- 5. Async Audio Generator ---
 async def generate_audio_file(text, rate):
+    # Uses Microsoft Edge's high-quality neural voice
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate=rate)
     filename = f"audio_{st.session_state.current_page}.mp3"
     await communicate.save(filename)
     return filename
 
-# --- 6. The "Auto-Next" Audio Player ---
+# --- 6. The "Auto-Next" Audio Player Logic ---
 def get_autoplay_html(audio_file_path):
-    # We convert audio to base64 to embed it directly
+    # Convert audio to base64 to embed it directly in HTML
     with open(audio_file_path, "rb") as f:
         audio_bytes = f.read()
     b64 = base64.b64encode(audio_bytes).decode()
     
-    # This HTML does 3 things:
-    # 1. Creates an audio player
-    # 2. Sets 'autoplay' so it starts immediately
-    # 3. Adds an 'onended' script that finds the Next button and clicks it
+    # HTML that plays audio and clicks 'Next' when done
     return f"""
         <audio id="audio_player" controls autoplay style="width: 100%;">
             <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
@@ -87,10 +85,10 @@ def get_autoplay_html(audio_file_path):
             audio.onended = function() {{
                 console.log("Audio ended. Triggering next page...");
                 
-                // Find all buttons on the page
+                // Find buttons on the page
                 var buttons = window.parent.document.getElementsByTagName('button');
                 
-                // Look for the one that contains "Next" (This is the trick!)
+                // Click the one that says "Next"
                 for (var i = 0; i < buttons.length; i++) {{
                     if (buttons[i].innerText.includes("Next")) {{
                         buttons[i].click();
@@ -133,13 +131,13 @@ if uploaded_file is not None:
     if text:
         # Generate Audio
         try:
+            # Generate the file using asyncio
             audio_path = asyncio.run(generate_audio_file(text, rate_str))
             
             # Render the Custom Player
-            # We use components.html to inject the player + the javascript
             st.components.v1.html(get_autoplay_html(audio_path), height=60)
             
-            # Cleanup
+            # Cleanup temp file
             if os.path.exists(audio_path):
                 os.remove(audio_path)
                 
@@ -150,7 +148,6 @@ if uploaded_file is not None:
         st.markdown(text)
     else:
         st.warning("No readable text on this page.")
-        # If blank page, maybe auto-skip? (Optional complexity)
 
 else:
     st.info("👆 Upload PDF to start")

@@ -3,21 +3,20 @@ import PyPDF2
 import edge_tts
 import asyncio
 import base64
-import os
 import streamlit.components.v1 as components
 
-# --- 1. App Setup ---
-st.set_page_config(page_title="Continuous Reader", layout="centered")
+# --- 1. App Configuration ---
+st.set_page_config(page_title="Turbo Reader", layout="centered")
 
-# Custom CSS for bigger buttons on mobile
+# Custom CSS for Mobile
 st.markdown("""
     <style>
     div.stButton > button {
         width: 100%;
-        padding: 20px;
+        padding: 16px;
         font-size: 20px;
         border-radius: 12px;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
         background-color: #f0f2f6; 
         border: 1px solid #d1d5db;
     }
@@ -28,126 +27,127 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🔄 Continuous Play Reader")
+st.title("🚀 Turbo eBook Reader")
 
-# --- 2. Initialize State ---
+# --- 2. Session State Management ---
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 0
-if 'auto_play' not in st.session_state:
-    st.session_state.auto_play = True  # Default to ON
+if 'audio_cache' not in st.session_state:
+    st.session_state.audio_cache = {}  # Stores audio so we don't re-download
+if 'pdf_text' not in st.session_state:
+    st.session_state.pdf_text = []     # Stores all text so we don't re-read PDF
 
 # --- 3. Settings ---
-col_set1, col_set2 = st.columns(2)
-with col_set1:
-    speed_mode = st.selectbox(
-        "Reading Speed", 
-        ["Normal", "Fast (+20%)", "Super Fast (+50%)"],
-        index=1
-    )
-with col_set2:
-    st.session_state.auto_play = st.checkbox("Auto-Play Next Page", value=True)
+col1, col2 = st.columns(2)
+with col1:
+    speed_mode = st.selectbox("Speed", ["Normal", "Fast (+20%)", "Turbo (+50%)"], index=1)
+with col2:
+    auto_play = st.checkbox("Auto-Turn Page", value=True)
 
-# Map selection to rate
 rate_str = "+0%"
-if speed_mode == "Fast (+20%)":
-    rate_str = "+20%"
-elif speed_mode == "Super Fast (+50%)":
-    rate_str = "+50%"
+if speed_mode == "Fast (+20%)": rate_str = "+20%"
+elif speed_mode == "Turbo (+50%)": rate_str = "+50%"
 
-# --- 4. File Upload ---
-uploaded_file = st.file_uploader("📂 Tap here to upload PDF", type="pdf")
-
-# --- 5. Async Audio Generator ---
-async def generate_audio_file(text, rate):
-    # Uses Microsoft Edge's high-quality neural voice
+# --- 4. Async Audio Engine ---
+async def get_audio_base64(text, rate):
+    # Generates audio and returns it as a base64 string (memory only, no files)
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate=rate)
-    filename = f"audio_{st.session_state.current_page}.mp3"
-    await communicate.save(filename)
-    return filename
+    audio_bytes = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_bytes += chunk["data"]
+    return base64.b64encode(audio_bytes).decode()
 
-# --- 6. The "Auto-Next" Audio Player Logic ---
-def get_autoplay_html(audio_file_path):
-    # Convert audio to base64 to embed it directly in HTML
-    with open(audio_file_path, "rb") as f:
-        audio_bytes = f.read()
-    b64 = base64.b64encode(audio_bytes).decode()
-    
-    # HTML that plays audio and clicks 'Next' when done
-    return f"""
-        <audio id="audio_player" controls autoplay style="width: 100%;">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        
-        <script>
-            var audio = document.getElementById("audio_player");
-            
-            // When audio finishes...
-            audio.onended = function() {{
-                console.log("Audio ended. Triggering next page...");
-                
-                // Find buttons on the page
-                var buttons = window.parent.document.getElementsByTagName('button');
-                
-                // Click the one that says "Next"
-                for (var i = 0; i < buttons.length; i++) {{
-                    if (buttons[i].innerText.includes("Next")) {{
-                        buttons[i].click();
-                        break;
-                    }}
-                }}
-            }};
-        </script>
-    """
+# --- 5. File Upload & Processing ---
+uploaded_file = st.file_uploader("📂 Upload PDF (Loads once, stays fast)", type="pdf")
 
 if uploaded_file is not None:
-    pdf_reader = PyPDF2.PdfReader(uploaded_file)
-    total_pages = len(pdf_reader.pages)
+    # A. One-time processing (Fixes the "4 page limit" bug)
+    if not st.session_state.pdf_text:
+        with st.spinner("Processing PDF..."):
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            # Store ALL pages in memory immediately
+            for page in pdf_reader.pages:
+                txt = page.extract_text()
+                st.session_state.pdf_text.append(txt if txt else "")
     
-    # --- Navigation Logic ---
+    total_pages = len(st.session_state.pdf_text)
+    current_page = st.session_state.current_page
+    
+    # --- 6. Navigation Logic ---
     def go_next():
         if st.session_state.current_page < total_pages - 1:
             st.session_state.current_page += 1
-
     def go_prev():
         if st.session_state.current_page > 0:
             st.session_state.current_page -= 1
+            
+    # Page Slider (Jump to any page)
+    st.session_state.current_page = st.slider("Go to Page", 1, total_pages, st.session_state.current_page + 1) - 1
 
-    # Buttons
+    # --- 7. Main Audio Logic (The "Cache Ahead" Trick) ---
+    
+    # Get Current Page Text
+    text_current = st.session_state.pdf_text[current_page]
+    
+    if text_current:
+        # Step A: Get Current Audio (Check cache first)
+        cache_key = f"{current_page}_{rate_str}"
+        
+        if cache_key not in st.session_state.audio_cache:
+            with st.spinner(f"Generating Page {current_page + 1}..."):
+                st.session_state.audio_cache[cache_key] = asyncio.run(get_audio_base64(text_current, rate_str))
+        
+        b64_audio = st.session_state.audio_cache[cache_key]
+
+        # Step B: Render Player
+        # We embed the next_page logic directly into the audio player
+        player_html = f"""
+            <audio id="player" controls autoplay style="width: 100%;">
+                <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+            </audio>
+            <script>
+                var audio = document.getElementById("player");
+                audio.onended = function() {{
+                    const nextBtn = window.parent.document.querySelector('button[aria-label="Next Page"]');
+                    if (nextBtn) {{ nextBtn.click(); }}
+                    else {{
+                        // Fallback search for button text
+                        var buttons = window.parent.document.getElementsByTagName('button');
+                        for (var i = 0; i < buttons.length; i++) {{
+                            if (buttons[i].innerText.includes("Next")) {{ buttons[i].click(); break; }}
+                        }}
+                    }}
+                }};
+            </script>
+        """
+        components.html(player_html, height=50)
+
+        # Step C: PRE-FETCH NEXT PAGE (The Secret Sauce)
+        # While you are listening to Page N, we download Page N+1 silently.
+        if current_page < total_pages - 1:
+            next_p = current_page + 1
+            text_next = st.session_state.pdf_text[next_p]
+            next_key = f"{next_p}_{rate_str}"
+            
+            if next_key not in st.session_state.audio_cache and text_next:
+                # We run this SILENTLY (no spinner)
+                try:
+                    st.session_state.audio_cache[next_key] = asyncio.run(get_audio_base64(text_next, rate_str))
+                    # print(f"Buffered Page {next_p}") # Debug
+                except:
+                    pass
+
+    # --- 8. Navigation Buttons ---
     c1, c2 = st.columns(2)
-    with c1:
-        st.button("⬅️ Prev", on_click=go_prev)
-    with c2:
-        # We give this button a specific label so our JavaScript can find it
-        st.button("Next ➡️", on_click=go_next)
+    with c1: st.button("⬅️ Prev", on_click=go_prev)
+    with c2: st.button("Next ➡️", on_click=go_next, args=(), key="next_btn", help="Next Page")
 
-    st.divider()
-
-    # --- Page Content ---
-    st.caption(f"Page {st.session_state.current_page + 1} of {total_pages}")
-    
-    page = pdf_reader.pages[st.session_state.current_page]
-    text = page.extract_text()
-    
-    if text:
-        # Generate Audio
-        try:
-            # Generate the file using asyncio
-            audio_path = asyncio.run(generate_audio_file(text, rate_str))
-            
-            # Render the Custom Player
-            st.components.v1.html(get_autoplay_html(audio_path), height=60)
-            
-            # Cleanup temp file
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-                
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-        # Show Text
-        st.markdown(text)
-    else:
-        st.warning("No readable text on this page.")
+    st.markdown("---")
+    st.markdown(text_current if text_current else "*No text found on this page.*")
 
 else:
-    st.info("👆 Upload PDF to start")
+    # Reset buffer on new load
+    if st.session_state.pdf_text:
+        st.session_state.pdf_text = []
+        st.session_state.audio_cache = {}
